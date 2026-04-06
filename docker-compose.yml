@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: auth_user
+      POSTGRES_PASSWORD: auth_password
+      POSTGRES_DB: auth_db
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth_user -d auth_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://auth_user:auth_password@db:5432/auth_db
+      - SECRET_KEY=your-super-secret-key-change-in-production-1234567890
+      - MCP_SHARED_TOKEN=local-mcp-token
+      - MCP_CALCULATOR_URL=http://mcp_calculator:8101
+      - MCP_EXTERNAL_DB_URL=http://mcp_external_db:8102
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=llama3.1:8b
+    depends_on:
+      db:
+        condition: service_healthy
+      mcp_calculator:
+        condition: service_started
+      mcp_external_db:
+        condition: service_started
+
+  mcp_calculator:
+    build: .
+    command: ["uv", "run", "uvicorn", "mcp_calculator_server:app", "--host", "0.0.0.0", "--port", "8101"]
+    environment:
+      - MCP_SHARED_TOKEN=local-mcp-token
+    ports:
+      - "8101:8101"
+
+  mcp_external_db:
+    build: .
+    command: ["uv", "run", "uvicorn", "mcp_external_db_server:app", "--host", "0.0.0.0", "--port", "8102"]
+    environment:
+      - MCP_SHARED_TOKEN=local-mcp-token
+      - EXTERNAL_DB_PATH=/app/external_data.db
+    ports:
+      - "8102:8102"
