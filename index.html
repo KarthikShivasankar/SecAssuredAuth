@@ -54,18 +54,23 @@
                     <label class="block text-sm font-medium">Register as Role</label>
                     <select id="user-role" class="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-indigo-400">
                         <option value="user">Standard User (user)</option>
-                        <option value="admin">Administrator (admin)</option>
                     </select>
                 </div>
                 <div class="flex gap-2">
                     <button type="submit" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 rounded">Login (PKCE)</button>
-                    <button type="button" onclick="registerHuman()" class="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold py-2 rounded">Register</button>
+                    <button type="button" onclick="registerHuman(this)" class="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold py-2 rounded">Register</button>
                 </div>
             </form>
+            <div id="mfa-setup-box" class="hidden mt-4 bg-indigo-50 p-4 border border-indigo-200 rounded">
+                <p class="text-sm text-indigo-900 font-semibold">MFA Setup</p>
+                <p class="text-xs text-indigo-800 mt-1">Add this secret to your authenticator app before first login.</p>
+                <p id="mfa-setup-secret" class="mt-2 text-xs font-mono break-all text-indigo-900"></p>
+                <button type="button" onclick="copyMfaSecret()" class="mt-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-2 py-1 rounded">Copy Secret</button>
+            </div>
 
             <form id="mfa-form" class="hidden mt-4 bg-yellow-50 p-4 border border-yellow-200 rounded" onsubmit="handleMFA(event)">
-                <p class="text-sm text-yellow-800 mb-2" id="mfa-message"><b>Medium Risk Detected:</b> Enter OTP (123456).</p>
-                <input type="text" id="otp-code" class="w-full border border-yellow-400 p-2 rounded text-center text-lg mb-2 outline-none focus:ring-2 focus:ring-yellow-600" required maxlength="6" placeholder="123456">
+                <p class="text-sm text-yellow-800 mb-2" id="mfa-message"><b>Medium Risk Detected:</b> Enter your authenticator app OTP.</p>
+                <input type="text" id="otp-code" class="w-full border border-yellow-400 p-2 rounded text-center text-lg mb-2 outline-none focus:ring-2 focus:ring-yellow-600" required maxlength="8" placeholder="123456">
                 <button type="submit" class="w-full bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 rounded">Verify OTP & Continue</button>
             </form>
 
@@ -86,9 +91,13 @@
                         <option value="mcp_server">MCP Protocol Server (mcp_server)</option>
                     </select>
                 </div>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium">Bootstrap Token (required for registration)</label>
+                    <input type="password" id="bootstrap-token" class="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-teal-400">
+                </div>
                 <div class="flex gap-2">
                     <button type="submit" class="flex-1 bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 rounded">Get Token</button>
-                    <button type="button" onclick="registerMachine()" class="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold py-2 rounded">Register Machine</button>
+                    <button type="button" onclick="registerMachine(this)" class="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold py-2 rounded">Register Machine</button>
                 </div>
             </form>
 
@@ -200,6 +209,29 @@
 
         let currentMode = 'user';
         let pkceState = {};
+        let accessToken = null;
+        let pendingMfaSecret = null;
+
+        function parseApiError(data, fallback) {
+            if (!data) return fallback;
+            if (typeof data.detail === 'string') return data.detail;
+            if (Array.isArray(data.detail)) return data.detail.map((item) => item.msg).join('; ');
+            return fallback;
+        }
+
+        function setBusy(button, isBusy, busyText) {
+            if (!button) return;
+            if (isBusy) {
+                button.dataset.originalText = button.innerText;
+                button.innerText = busyText;
+                button.disabled = true;
+                button.classList.add('opacity-60', 'cursor-not-allowed');
+                return;
+            }
+            button.innerText = button.dataset.originalText || button.innerText;
+            button.disabled = false;
+            button.classList.remove('opacity-60', 'cursor-not-allowed');
+        }
 
         function switchAuthMode(mode) {
             currentMode = mode;
@@ -217,35 +249,82 @@
         }
         function hideAlert() { document.getElementById('alert-box').className = 'hidden'; }
         function logAPI(msg) { document.getElementById('api-log').innerText = typeof msg === 'object' ? JSON.stringify(msg, null, 2) : msg; }
+        function hideMfaSetup() {
+            pendingMfaSecret = null;
+            document.getElementById('mfa-setup-secret').innerText = '';
+            document.getElementById('mfa-setup-box').classList.add('hidden');
+        }
+        function showMfaSetup(secret) {
+            pendingMfaSecret = secret;
+            document.getElementById('mfa-setup-secret').innerText = `Secret: ${secret}`;
+            document.getElementById('mfa-setup-box').classList.remove('hidden');
+        }
+        async function copyMfaSecret() {
+            if (!pendingMfaSecret) return;
+            try {
+                await navigator.clipboard.writeText(pendingMfaSecret);
+                showAlert('MFA secret copied to clipboard.', 'success');
+            } catch (err) {
+                showAlert('Could not copy MFA secret. Please copy manually.', 'error');
+            }
+        }
+        function getBootstrapHeaders(baseHeaders = {}) {
+            const token = document.getElementById('bootstrap-token').value;
+            if (!token) {
+                return getHeaders(baseHeaders);
+            }
+            return getHeaders({ ...baseHeaders, 'X-Admin-Bootstrap-Token': token });
+        }
 
-        async function registerHuman() {
+        async function registerHuman(button) {
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
             const role = document.getElementById('user-role').value;
+            if (password.length < 12) {
+                showAlert('Password must be at least 12 characters.');
+                return;
+            }
             try {
+                setBusy(button, true, 'Registering...');
                 const res = await fetch('/api/register/user', {
-                    method: 'POST', headers: getHeaders({'Content-Type': 'application/json'}),
+                    method: 'POST', headers: getBootstrapHeaders({'Content-Type': 'application/json'}),
                     body: JSON.stringify({username, password, role})
                 });
                 const data = await res.json();
-                if (!res.ok) throw new Error(data.detail);
+                if (!res.ok) throw new Error(parseApiError(data, 'Failed to register user'));
                 showAlert(`Registered user: ${username}`, 'success');
-            } catch (err) { showAlert(err.message); }
+                if (data.mfa_setup?.secret) {
+                    showMfaSetup(data.mfa_setup.secret);
+                }
+            } catch (err) {
+                showAlert(err.message);
+            } finally {
+                setBusy(button, false, 'Register');
+            }
         }
 
-        async function registerMachine() {
+        async function registerMachine(button) {
             const client_id = document.getElementById('client_id').value;
             const client_secret = document.getElementById('client_secret').value;
             const role = document.getElementById('machine-role').value;
+            if (client_secret.length < 12) {
+                showAlert('Client secret must be at least 12 characters.');
+                return;
+            }
             try {
+                setBusy(button, true, 'Registering...');
                 const res = await fetch('/api/register/machine', {
-                    method: 'POST', headers: getHeaders({'Content-Type': 'application/json'}),
+                    method: 'POST', headers: getBootstrapHeaders({'Content-Type': 'application/json'}),
                     body: JSON.stringify({client_id, client_secret, role})
                 });
                 const data = await res.json();
-                if (!res.ok) throw new Error(data.detail);
+                if (!res.ok) throw new Error(parseApiError(data, 'Failed to register machine'));
                 showAlert(`Registered machine: ${client_id}`, 'success');
-            } catch (err) { showAlert(err.message); }
+            } catch (err) {
+                showAlert(err.message);
+            } finally {
+                setBusy(button, false, 'Register Machine');
+            }
         }
 
         async function handleHumanAuth(e) {
@@ -263,15 +342,16 @@
                     body: JSON.stringify({ username, password, code_challenge: pkce.challenge })
                 });
                 const authData = await authRes.json();
-                if (!authRes.ok) throw new Error(authData.detail);
+                if (!authRes.ok) throw new Error(parseApiError(authData, 'Authorization failed'));
 
                 if (authData.status === 'mfa_required') {
                     pkceState.mfa_token = authData.mfa_token;
                     document.getElementById('human-form').classList.add('hidden');
                     document.getElementById('mfa-form').classList.remove('hidden');
-                    document.getElementById('mfa-message').innerHTML = `<b>${authData.message}</b><br>Risk level: <span class="text-red-600 font-bold">${authData.risk}</span>. Enter OTP (123456).`;
+                    document.getElementById('mfa-message').innerText = `${authData.message} Risk level: ${authData.risk}. Enter your authenticator app OTP.`;
                     showAlert('Step-up MFA triggered due to context change.', 'error');
                 } else if (authData.status === 'success') {
+                    hideMfaSetup();
                     showAlert('Low Risk. Immediate login allowed.', 'success');
                     exchangeCodeForToken(authData.auth_code);
                 }
@@ -288,10 +368,11 @@
                     body: JSON.stringify({ mfa_token: pkceState.mfa_token, otp_code, code_challenge: pkceState.challenge })
                 });
                 const data = await res.json();
-                if (!res.ok) throw new Error(data.detail);
+                if (!res.ok) throw new Error(parseApiError(data, 'MFA verification failed'));
 
                 document.getElementById('mfa-form').classList.add('hidden');
                 document.getElementById('human-form').classList.remove('hidden');
+                hideMfaSetup();
                 showAlert('MFA verified successfully.', 'success');
                 exchangeCodeForToken(data.auth_code);
             } catch (err) { showAlert(err.message); }
@@ -309,7 +390,7 @@
                     body: formData
                 });
                 const data = await res.json();
-                if (!res.ok) throw new Error(data.detail);
+                if (!res.ok) throw new Error(parseApiError(data, 'Token exchange failed'));
                 saveToken(data);
                 testAPI('GET', '/api/dashboard');
             } catch (err) { showAlert(err.message); }
@@ -331,7 +412,7 @@
                     body: formData
                 });
                 const data = await res.json();
-                if (!res.ok) throw new Error(data.detail);
+                if (!res.ok) throw new Error(parseApiError(data, 'Machine authentication failed'));
 
                 saveToken(data);
                 showAlert('Machine authenticated successfully!', 'success');
@@ -339,24 +420,25 @@
         }
 
         function saveToken(data) {
-            localStorage.setItem('access_token', data.access_token);
+            accessToken = data.access_token;
             document.getElementById('token-display').innerText = data.access_token.substring(0, 40) + '...';
-            document.getElementById('scopes-display').innerHTML = data.scopes.map(s => `<span class="bg-blue-100 text-blue-800 px-2 py-1 rounded inline-block m-1">${s}</span>`).join('');
+            document.getElementById('scopes-display').innerText = Array.isArray(data.scopes) ? data.scopes.join(', ') : 'None';
         }
 
         function logout() {
-            localStorage.removeItem('access_token');
+            accessToken = null;
             document.getElementById('token-display').innerText = 'None';
             document.getElementById('scopes-display').innerText = 'None';
             document.getElementById('human-form').classList.remove('hidden');
             document.getElementById('mfa-form').classList.add('hidden');
             logAPI('Ready...');
             pkceState = {};
+            hideMfaSetup();
             hideAlert();
         }
 
         async function testAPI(method, url, body = null) {
-            const token = localStorage.getItem('access_token');
+            const token = accessToken;
             if (!token) return logAPI('Error: No access token. Please login first.');
 
             const options = { method, headers: { 'Authorization': `Bearer ${token}` } };
@@ -374,7 +456,7 @@
         }
 
         async function runAgent() {
-            const token = localStorage.getItem('access_token');
+            const token = accessToken;
             if (!token) return logAPI('Error: No access token. Please login first.');
 
             const payload = {
@@ -399,7 +481,7 @@
         }
 
         async function listAgentActions() {
-            const token = localStorage.getItem('access_token');
+            const token = accessToken;
             if (!token) return logAPI('Error: No access token. Please login first.');
             try {
                 const res = await fetch('/api/agent/actions', {

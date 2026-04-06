@@ -62,7 +62,7 @@ def test_stress_burst_first_logins_trigger_mfa():
     user_count = 100
     results = []
     for i in range(user_count):
-        results.append(_register_and_authorize(f"user_{i}", "123", f"10.0.0.{i+1}"))
+        results.append(_register_and_authorize(f"user_{i}", "StrongPassword123!", f"10.0.0.{i+1}"))
 
     assert len(results) == user_count
     assert all(status == 200 for status, _ in results)

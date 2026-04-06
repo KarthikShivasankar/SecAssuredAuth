@@ -2,12 +2,14 @@ from datetime import timedelta
 import base64
 import hashlib
 
+import pyotp
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from core import User
 from main import Base, app, create_jwt, get_db
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
@@ -48,27 +50,32 @@ def generate_pkce_pair():
 
 
 def test_contextual_risk_flows():
-    client.post("/api/register/user", json={"username": "bob", "password": "123", "role": "user"})
+    register_resp = client.post("/api/register/user", json={"username": "bob", "password": "StrongPassword123!", "role": "user"})
+    assert register_resp.status_code == 200
+    assert register_resp.json().get("mfa_setup", {}).get("secret")
     verifier, challenge = generate_pkce_pair()
 
     req_med = client.post(
         "/api/authorize",
-        json={"username": "bob", "password": "123", "code_challenge": challenge},
+        json={"username": "bob", "password": "StrongPassword123!", "code_challenge": challenge},
         headers={"X-Simulated-IP": "10.0.0.1"},
     )
     assert req_med.json()["status"] == "mfa_required"
     assert req_med.json()["risk"] == "MEDIUM"
+    with TestingSessionLocal() as db:
+        user = db.query(User).filter(User.username == "bob").first()
+        otp_code = pyotp.TOTP(user.mfa_secret).now()
 
     mfa_req = client.post(
         "/api/mfa",
-        json={"mfa_token": req_med.json()["mfa_token"], "otp_code": "123456", "code_challenge": challenge},
+        json={"mfa_token": req_med.json()["mfa_token"], "otp_code": otp_code, "code_challenge": challenge},
         headers={"X-Simulated-IP": "10.0.0.1"},
     )
     assert mfa_req.json()["status"] == "success"
 
     req_low = client.post(
         "/api/authorize",
-        json={"username": "bob", "password": "123", "code_challenge": challenge},
+        json={"username": "bob", "password": "StrongPassword123!", "code_challenge": challenge},
         headers={"X-Simulated-IP": "10.0.0.1"},
     )
     assert req_low.json()["status"] == "success"
@@ -76,7 +83,7 @@ def test_contextual_risk_flows():
 
     req_med2 = client.post(
         "/api/authorize",
-        json={"username": "bob", "password": "123", "code_challenge": challenge},
+        json={"username": "bob", "password": "StrongPassword123!", "code_challenge": challenge},
         headers={"X-Simulated-IP": "192.168.1.5"},
     )
     assert req_med2.json()["status"] == "mfa_required"
@@ -84,7 +91,7 @@ def test_contextual_risk_flows():
 
     req_high = client.post(
         "/api/authorize",
-        json={"username": "bob", "password": "123", "code_challenge": challenge},
+        json={"username": "bob", "password": "StrongPassword123!", "code_challenge": challenge},
         headers={"X-Simulated-IP": "66.249.1.1"},
     )
     assert req_high.status_code == 403
@@ -92,14 +99,14 @@ def test_contextual_risk_flows():
 
 
 def test_machine_blocked_ip():
-    client.post("/api/register/machine", json={"client_id": "ai-1", "client_secret": "sec", "role": "llm"})
+    client.post("/api/register/machine", json={"client_id": "ai-1", "client_secret": "StrongSecret123!", "role": "llm"})
 
     req = client.post(
         "/api/token",
         data={
             "grant_type": "client_credentials",
             "client_id": "ai-1",
-            "client_secret": "sec",
+            "client_secret": "StrongSecret123!",
         },
         headers={"X-Simulated-IP": "66.249.5.5"},
     )

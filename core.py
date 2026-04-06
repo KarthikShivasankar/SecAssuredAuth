@@ -2,8 +2,10 @@ import base64
 import hashlib
 import os
 import secrets
+from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Generator, Tuple
+from uuid import uuid4
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer, SecurityScopes
@@ -12,10 +14,25 @@ from passlib.context import CryptContext
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, create_engine, desc
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
-SECRET_KEY = os.getenv("SECRET_KEY", "fallback-secret-key-for-local-dev-1234")
+DEFAULT_SECRET_KEY = "fallback-secret-key-for-local-dev-1234"
+DEFAULT_MCP_SHARED_TOKEN = "local-mcp-token"
+APP_ENV = os.getenv("APP_ENV", "development").lower()
+SECRET_KEY = os.getenv("SECRET_KEY", DEFAULT_SECRET_KEY)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 AUTH_CODE_EXPIRE_MINUTES = 5
+MFA_TOKEN_EXPIRE_MINUTES = 5
+JWT_ISSUER = os.getenv("JWT_ISSUER", "secassured-auth")
+JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "secassured-api")
+TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true"
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+RATE_LIMIT_MAX_ATTEMPTS = int(os.getenv("RATE_LIMIT_MAX_ATTEMPTS", "8"))
+
+if APP_ENV == "production":
+    if SECRET_KEY == DEFAULT_SECRET_KEY or len(SECRET_KEY) < 32:
+        raise RuntimeError("Insecure SECRET_KEY for production")
+    if os.getenv("MCP_SHARED_TOKEN", DEFAULT_MCP_SHARED_TOKEN) == DEFAULT_MCP_SHARED_TOKEN:
+        raise RuntimeError("Insecure MCP_SHARED_TOKEN for production")
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./local_dev.db")
 
@@ -51,6 +68,7 @@ class User(Base):
     username = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     role = Column(String, default="user")
+    mfa_secret = Column(String, nullable=True)
 
 
 class MachineClient(Base):
@@ -89,6 +107,23 @@ class AgentAudit(Base):
     status = Column(String)
     details = Column(String)
     timestamp = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class RevokedToken(Base):
+    __tablename__ = "revoked_tokens"
+    id = Column(Integer, primary_key=True, index=True)
+    jti = Column(String, unique=True, index=True)
+    revoked_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class MFAChallenge(Base):
+    __tablename__ = "mfa_challenges"
+    id = Column(Integer, primary_key=True, index=True)
+    challenge_id = Column(String, unique=True, index=True)
+    username = Column(String, index=True)
+    expires_at = Column(DateTime(timezone=True))
+    attempt_count = Column(Integer, default=0)
+    used_at = Column(DateTime(timezone=True), nullable=True)
 
 
 Base.metadata.create_all(bind=engine)
@@ -132,7 +167,18 @@ def get_hash(secret: str) -> str:
 
 def create_jwt(subject: str, entity_type: str, scopes: list, expires_delta: timedelta) -> str:
     expire = datetime.now(timezone.utc) + expires_delta
-    to_encode = {"sub": subject, "type": entity_type, "scopes": scopes, "exp": expire}
+    now = datetime.now(timezone.utc)
+    to_encode = {
+        "sub": subject,
+        "type": entity_type,
+        "scopes": scopes,
+        "iss": JWT_ISSUER,
+        "aud": JWT_AUDIENCE,
+        "jti": str(uuid4()),
+        "iat": now,
+        "nbf": now,
+        "exp": expire,
+    }
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
@@ -143,10 +189,12 @@ def verify_pkce(code_challenge: str, code_verifier: str) -> bool:
 
 
 def get_client_context(request: Request) -> Tuple[str, str]:
-    ip = (
-        request.headers.get("X-Simulated-IP")
-        or request.headers.get("x-forwarded-for", request.client.host).split(",")[0]
-    )
+    client_ip = request.client.host if request.client else "unknown"
+    if TRUST_PROXY_HEADERS:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            client_ip = forwarded.split(",")[0].strip()
+    ip = request.headers.get("X-Simulated-IP") or client_ip
     ua = request.headers.get("X-Simulated-UA") or request.headers.get("user-agent", "Unknown")
     return ip, ua
 
@@ -165,9 +213,22 @@ def evaluate_context(db: Session, entity_id: str, ip_address: str, user_agent: s
     return "LOW", "ALLOW"
 
 
-def verify_scopes(security_scopes: SecurityScopes, token: str = Depends(oauth2_scheme)):
+def verify_scopes(
+    security_scopes: SecurityScopes,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM],
+            audience=JWT_AUDIENCE,
+            issuer=JWT_ISSUER,
+        )
+        token_jti = payload.get("jti")
+        if token_jti and db.query(RevokedToken).filter(RevokedToken.jti == token_jti).first():
+            raise HTTPException(status_code=401, detail="Token revoked")
         token_scopes = payload.get("scopes", [])
         for scope in security_scopes.scopes:
             if scope not in token_scopes:
@@ -180,3 +241,17 @@ def verify_scopes(security_scopes: SecurityScopes, token: str = Depends(oauth2_s
 def log_activity(db: Session, entity_id: str, ip: str, ua: str, status: str, risk: str):
     db.add(LoginActivity(entity_id=entity_id, ip_address=ip, user_agent=ua, status=status, risk_level=risk))
     db.commit()
+
+
+_rate_limit_bucket: dict[str, deque[float]] = defaultdict(deque)
+
+
+def enforce_rate_limit(key: str):
+    now = datetime.now(timezone.utc).timestamp()
+    window_start = now - RATE_LIMIT_WINDOW_SECONDS
+    bucket = _rate_limit_bucket[key]
+    while bucket and bucket[0] < window_start:
+        bucket.popleft()
+    if len(bucket) >= RATE_LIMIT_MAX_ATTEMPTS:
+        raise HTTPException(status_code=429, detail="Too many requests. Try again later.")
+    bucket.append(now)
