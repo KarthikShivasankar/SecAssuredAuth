@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Context-Based OAuth 2.1 Demo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-100 text-slate-800 font-sans min-h-screen p-8">
+
+    <div class="max-w-5xl mx-auto mb-8 bg-blue-900 text-white p-4 rounded-xl shadow-lg border border-blue-800 flex flex-col md:flex-row gap-4 items-center justify-between">
+        <div>
+            <h2 class="font-bold text-lg text-blue-200">Context Simulator</h2>
+            <p class="text-xs text-blue-300">Change these values to test Low, Medium, and High risk authentication scenarios.</p>
+        </div>
+        <div class="flex gap-4">
+            <div>
+                <label class="text-xs text-blue-300 block">Simulated IP Address</label>
+                <input type="text" id="sim-ip" value="192.168.1.100" class="text-black p-1 rounded text-sm font-mono w-32 outline-none">
+            </div>
+            <div>
+                <label class="text-xs text-blue-300 block">Simulated User-Agent</label>
+                <input type="text" id="sim-ua" value="Mozilla/5.0 (Windows NT 10.0)" class="text-black p-1 rounded text-sm w-48 outline-none">
+            </div>
+        </div>
+        <div class="flex flex-col gap-1">
+            <button onclick="setContext('192.168.1.100', 'Mozilla/5.0 (Windows NT 10.0)')" class="text-xs bg-green-600 hover:bg-green-500 px-2 py-1 rounded">Reset (Low Risk)</button>
+            <button onclick="setContext('203.0.113.42', 'Mozilla/5.0 (Macintosh)')" class="text-xs bg-yellow-600 hover:bg-yellow-500 px-2 py-1 rounded">New IP (Medium Risk)</button>
+            <button onclick="setContext('66.249.12.1', 'curl/7.68.0')" class="text-xs bg-red-600 hover:bg-red-500 px-2 py-1 rounded">Malicious IP (High Risk)</button>
+        </div>
+    </div>
+
+    <div class="max-w-5xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div class="bg-white p-6 rounded-xl shadow-lg border border-slate-200">
+            <h2 class="text-2xl font-bold mb-4 text-indigo-700">Login (OAuth 2.1)</h2>
+
+            <div class="flex gap-2 mb-6 border-b pb-2">
+                <button id="tab-user" class="px-4 py-2 font-semibold text-indigo-700 border-b-2 border-indigo-700" onclick="switchAuthMode('user')">Human</button>
+                <button id="tab-machine" class="px-4 py-2 font-semibold text-slate-500" onclick="switchAuthMode('machine')">Machine (AI/MCP)</button>
+            </div>
+
+            <div id="alert-box" class="hidden mb-4 p-3 rounded text-sm text-white"></div>
+
+            <form id="human-form" onsubmit="handleHumanAuth(event)">
+                <div class="mb-4">
+                    <label class="block text-sm font-medium">Username</label>
+                    <input type="text" id="username" class="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-indigo-400" required>
+                </div>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium">Password</label>
+                    <input type="password" id="password" class="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-indigo-400" required>
+                </div>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium">Register as Role</label>
+                    <select id="user-role" class="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-indigo-400">
+                        <option value="user">Standard User (user)</option>
+                        <option value="admin">Administrator (admin)</option>
+                    </select>
+                </div>
+                <div class="flex gap-2">
+                    <button type="submit" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 rounded">Login (PKCE)</button>
+                    <button type="button" onclick="registerHuman()" class="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold py-2 rounded">Register</button>
+                </div>
+            </form>
+
+            <form id="mfa-form" class="hidden mt-4 bg-yellow-50 p-4 border border-yellow-200 rounded" onsubmit="handleMFA(event)">
+                <p class="text-sm text-yellow-800 mb-2" id="mfa-message"><b>Medium Risk Detected:</b> Enter OTP (123456).</p>
+                <input type="text" id="otp-code" class="w-full border border-yellow-400 p-2 rounded text-center text-lg mb-2 outline-none focus:ring-2 focus:ring-yellow-600" required maxlength="6" placeholder="123456">
+                <button type="submit" class="w-full bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 rounded">Verify OTP & Continue</button>
+            </form>
+
+            <form id="machine-form" class="hidden" onsubmit="handleMachineAuth(event)">
+                <div class="mb-4">
+                    <label class="block text-sm font-medium">Client ID</label>
+                    <input type="text" id="client_id" class="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-teal-400" required>
+                </div>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium">Client Secret</label>
+                    <input type="password" id="client_secret" class="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-teal-400" required>
+                </div>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium">Machine Type</label>
+                    <select id="machine-role" class="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-teal-400">
+                        <option value="llm">LLM Service (llm)</option>
+                        <option value="agent">Autonomous Agent (agent)</option>
+                        <option value="mcp_server">MCP Protocol Server (mcp_server)</option>
+                    </select>
+                </div>
+                <div class="flex gap-2">
+                    <button type="submit" class="flex-1 bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 rounded">Get Token</button>
+                    <button type="button" onclick="registerMachine()" class="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold py-2 rounded">Register Machine</button>
+                </div>
+            </form>
+
+            <div class="mt-8 p-4 bg-slate-50 border rounded break-words text-xs font-mono">
+                <h3 class="font-bold text-slate-700 mb-2">Access Token:</h3>
+                <div id="token-display" class="text-slate-500">None</div>
+                <h3 class="font-bold text-slate-700 mt-2 mb-2">Granted Scopes:</h3>
+                <div id="scopes-display" class="text-slate-500 text-sm">None</div>
+                <button onclick="logout()" class="mt-4 bg-red-100 text-red-600 px-3 py-1 rounded border border-red-200 hover:bg-red-200">Logout / Clear Token</button>
+            </div>
+        </div>
+
+        <div class="bg-white p-6 rounded-xl shadow-lg border border-slate-200">
+            <h2 class="text-2xl font-bold mb-6 text-slate-800">Resource Server (RBAC)</h2>
+            <p class="text-sm text-slate-500 mb-6">Test your tokens against endpoints requiring specific scopes.</p>
+
+            <div class="space-y-4">
+                <button onclick="testAPI('GET', '/api/dashboard')" class="w-full text-left p-3 border rounded hover:bg-indigo-50 flex justify-between items-center transition">
+                    <span><b>Dashboard</b> (requires <code>read:profile</code>)</span>
+                    <span class="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded">User/Admin</span>
+                </button>
+
+                <button onclick="testAPI('GET', '/api/admin/data')" class="w-full text-left p-3 border rounded hover:bg-purple-50 flex justify-between items-center transition">
+                    <span><b>Admin Data</b> (requires <code>admin:all</code>)</span>
+                    <span class="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded">Admin Only</span>
+                </button>
+
+                <button onclick="testAPI('POST', '/api/llm/generate', {text: 'Hello!'})" class="w-full text-left p-3 border rounded hover:bg-teal-50 flex justify-between items-center transition">
+                    <span><b>LLM Gen</b> (requires <code>ai:generate</code>)</span>
+                    <span class="text-xs bg-teal-100 text-teal-700 px-2 py-1 rounded">LLM Machine</span>
+                </button>
+
+                <button onclick="testAPI('POST', '/api/mcp/stream', {})" class="w-full text-left p-3 border rounded hover:bg-orange-50 flex justify-between items-center transition">
+                    <span><b>MCP Stream</b> (requires <code>mcp:stream</code>)</span>
+                    <span class="text-xs bg-orange-100 text-orange-700 px-2 py-1 rounded">MCP Machine</span>
+                </button>
+            </div>
+
+            <div class="mt-6">
+                <h3 class="font-bold text-slate-700 mb-2">API Log / Dashboard Output:</h3>
+                <pre id="api-log" class="bg-slate-800 text-green-400 p-4 rounded text-sm overflow-x-auto min-h-[250px] shadow-inner">Ready...</pre>
+            </div>
+        </div>
+    </div>
+
+    <div class="max-w-5xl mx-auto mt-8 bg-white p-6 rounded-xl shadow-lg border border-slate-200">
+        <h2 class="text-2xl font-bold mb-2 text-emerald-700">Agent Playground</h2>
+        <p class="text-sm text-slate-500 mb-4">Test `/api/agent/execute` with scoped actions, MCP tools, and optional code execution approval.</p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label class="block text-sm font-medium">Web Query</label>
+                <input type="text" id="agent-web-query" placeholder="oauth 2.1 security best practices" class="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-emerald-400">
+            </div>
+            <div>
+                <label class="block text-sm font-medium">Calculator Expression</label>
+                <input type="text" id="agent-calc" placeholder="(2+3)*7" class="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-emerald-400">
+            </div>
+            <div>
+                <label class="block text-sm font-medium">External DB Keyword</label>
+                <input type="text" id="agent-db-keyword" placeholder="mfa" class="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-emerald-400">
+            </div>
+            <div>
+                <label class="block text-sm font-medium">Ollama Prompt</label>
+                <input type="text" id="agent-prompt" placeholder="Summarize zero trust in 2 lines." class="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-emerald-400">
+            </div>
+            <div class="md:col-span-2">
+                <label class="block text-sm font-medium">Sandbox Python Code</label>
+                <textarea id="agent-python" rows="4" placeholder="print(40 + 2)" class="w-full border p-2 rounded outline-none focus:ring-2 focus:ring-emerald-400 font-mono text-sm"></textarea>
+            </div>
+            <div class="md:col-span-2 flex items-center gap-2">
+                <input type="checkbox" id="agent-confirm" class="h-4 w-4">
+                <label for="agent-confirm" class="text-sm text-slate-700">Confirm consequential action (required for sandbox code)</label>
+            </div>
+        </div>
+        <div class="mt-4 flex gap-2">
+            <button onclick="runAgent()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-4 rounded">Run Agent Actions</button>
+            <button onclick="listAgentActions()" class="bg-slate-200 hover:bg-slate-300 text-slate-800 font-bold py-2 px-4 rounded">List Action Registry</button>
+        </div>
+    </div>
+
+    <script>
+        function setContext(ip, ua) {
+            document.getElementById('sim-ip').value = ip;
+            document.getElementById('sim-ua').value = ua;
+            showAlert(`Simulator context updated. IP: ${ip}`, 'success');
+        }
+
+        function getHeaders(baseHeaders = {}) {
+            return {
+                ...baseHeaders,
+                'X-Simulated-IP': document.getElementById('sim-ip').value,
+                'X-Simulated-UA': document.getElementById('sim-ua').value
+            };
+        }
+
+        function generateRandomString(length) {
+            const array = new Uint32Array(length);
+            window.crypto.getRandomValues(array);
+            return Array.from(array, dec => ('0' + dec.toString(16)).substr(-2)).join('').substring(0, length);
+        }
+
+        async function generatePKCE() {
+            const verifier = generateRandomString(43);
+            const data = new TextEncoder().encode(verifier);
+            const hash = await window.crypto.subtle.digest('SHA-256', data);
+            const challenge = btoa(String.fromCharCode(...new Uint8Array(hash))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+            return { verifier, challenge };
+        }
+
+        let currentMode = 'user';
+        let pkceState = {};
+
+        function switchAuthMode(mode) {
+            currentMode = mode;
+            document.getElementById('human-form').classList.toggle('hidden', mode !== 'user');
+            document.getElementById('machine-form').classList.toggle('hidden', mode !== 'machine');
+            document.getElementById('tab-user').className = mode === 'user' ? 'px-4 py-2 font-semibold text-indigo-700 border-b-2 border-indigo-700' : 'px-4 py-2 font-semibold text-slate-500';
+            document.getElementById('tab-machine').className = mode === 'machine' ? 'px-4 py-2 font-semibold text-teal-700 border-b-2 border-teal-700' : 'px-4 py-2 font-semibold text-slate-500';
+            hideAlert();
+        }
+
+        function showAlert(msg, type='error') {
+            const el = document.getElementById('alert-box');
+            el.innerText = msg;
+            el.className = `mb-4 p-3 rounded text-sm text-white block ${type === 'error' ? 'bg-red-600 shadow-md border border-red-800' : 'bg-green-600 shadow-md border border-green-800'}`;
+        }
+        function hideAlert() { document.getElementById('alert-box').className = 'hidden'; }
+        function logAPI(msg) { document.getElementById('api-log').innerText = typeof msg === 'object' ? JSON.stringify(msg, null, 2) : msg; }
+
+        async function registerHuman() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const role = document.getElementById('user-role').value;
+            try {
+                const res = await fetch('/api/register/user', {
+                    method: 'POST', headers: getHeaders({'Content-Type': 'application/json'}),
+                    body: JSON.stringify({username, password, role})
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail);
+                showAlert(`Registered user: ${username}`, 'success');
+            } catch (err) { showAlert(err.message); }
+        }
+
+        async function registerMachine() {
+            const client_id = document.getElementById('client_id').value;
+            const client_secret = document.getElementById('client_secret').value;
+            const role = document.getElementById('machine-role').value;
+            try {
+                const res = await fetch('/api/register/machine', {
+                    method: 'POST', headers: getHeaders({'Content-Type': 'application/json'}),
+                    body: JSON.stringify({client_id, client_secret, role})
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail);
+                showAlert(`Registered machine: ${client_id}`, 'success');
+            } catch (err) { showAlert(err.message); }
+        }
+
+        async function handleHumanAuth(e) {
+            e.preventDefault(); hideAlert();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            const pkce = await generatePKCE();
+            pkceState.verifier = pkce.verifier;
+            pkceState.challenge = pkce.challenge;
+
+            try {
+                const authRes = await fetch('/api/authorize', {
+                    method: 'POST', headers: getHeaders({'Content-Type': 'application/json'}),
+                    body: JSON.stringify({ username, password, code_challenge: pkce.challenge })
+                });
+                const authData = await authRes.json();
+                if (!authRes.ok) throw new Error(authData.detail);
+
+                if (authData.status === 'mfa_required') {
+                    pkceState.mfa_token = authData.mfa_token;
+                    document.getElementById('human-form').classList.add('hidden');
+                    document.getElementById('mfa-form').classList.remove('hidden');
+                    document.getElementById('mfa-message').innerHTML = `<b>${authData.message}</b><br>Risk level: <span class="text-red-600 font-bold">${authData.risk}</span>. Enter OTP (123456).`;
+                    showAlert('Step-up MFA triggered due to context change.', 'error');
+                } else if (authData.status === 'success') {
+                    showAlert('Low Risk. Immediate login allowed.', 'success');
+                    exchangeCodeForToken(authData.auth_code);
+                }
+            } catch (err) { showAlert(err.message); }
+        }
+
+        async function handleMFA(e) {
+            e.preventDefault(); hideAlert();
+            const otp_code = document.getElementById('otp-code').value;
+
+            try {
+                const res = await fetch('/api/mfa', {
+                    method: 'POST', headers: getHeaders({'Content-Type': 'application/json'}),
+                    body: JSON.stringify({ mfa_token: pkceState.mfa_token, otp_code, code_challenge: pkceState.challenge })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail);
+
+                document.getElementById('mfa-form').classList.add('hidden');
+                document.getElementById('human-form').classList.remove('hidden');
+                showAlert('MFA verified successfully.', 'success');
+                exchangeCodeForToken(data.auth_code);
+            } catch (err) { showAlert(err.message); }
+        }
+
+        async function exchangeCodeForToken(authCode) {
+            const formData = new URLSearchParams();
+            formData.append('grant_type', 'authorization_code');
+            formData.append('code', authCode);
+            formData.append('code_verifier', pkceState.verifier);
+
+            try {
+                const res = await fetch('/api/token', {
+                    method: 'POST', headers: getHeaders({'Content-Type': 'application/x-www-form-urlencoded'}),
+                    body: formData
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail);
+                saveToken(data);
+                testAPI('GET', '/api/dashboard');
+            } catch (err) { showAlert(err.message); }
+        }
+
+        async function handleMachineAuth(e) {
+            e.preventDefault(); hideAlert();
+            const client_id = document.getElementById('client_id').value;
+            const client_secret = document.getElementById('client_secret').value;
+
+            const formData = new URLSearchParams();
+            formData.append('grant_type', 'client_credentials');
+            formData.append('client_id', client_id);
+            formData.append('client_secret', client_secret);
+
+            try {
+                const res = await fetch('/api/token', {
+                    method: 'POST', headers: getHeaders({'Content-Type': 'application/x-www-form-urlencoded'}),
+                    body: formData
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail);
+
+                saveToken(data);
+                showAlert('Machine authenticated successfully!', 'success');
+            } catch (err) { showAlert(err.message); }
+        }
+
+        function saveToken(data) {
+            localStorage.setItem('access_token', data.access_token);
+            document.getElementById('token-display').innerText = data.access_token.substring(0, 40) + '...';
+            document.getElementById('scopes-display').innerHTML = data.scopes.map(s => `<span class="bg-blue-100 text-blue-800 px-2 py-1 rounded inline-block m-1">${s}</span>`).join('');
+        }
+
+        function logout() {
+            localStorage.removeItem('access_token');
+            document.getElementById('token-display').innerText = 'None';
+            document.getElementById('scopes-display').innerText = 'None';
+            document.getElementById('human-form').classList.remove('hidden');
+            document.getElementById('mfa-form').classList.add('hidden');
+            logAPI('Ready...');
+            pkceState = {};
+            hideAlert();
+        }
+
+        async function testAPI(method, url, body = null) {
+            const token = localStorage.getItem('access_token');
+            if (!token) return logAPI('Error: No access token. Please login first.');
+
+            const options = { method, headers: { 'Authorization': `Bearer ${token}` } };
+            if (body) {
+                options.headers['Content-Type'] = 'application/json';
+                options.body = JSON.stringify(body);
+            }
+
+            try {
+                const res = await fetch(url, options);
+                let text = await res.text();
+                try { text = JSON.parse(text); } catch (e) {}
+                logAPI(text);
+            } catch (err) { logAPI(`Network Error: ${err.message}`); }
+        }
+
+        async function runAgent() {
+            const token = localStorage.getItem('access_token');
+            if (!token) return logAPI('Error: No access token. Please login first.');
+
+            const payload = {
+                web_query: document.getElementById('agent-web-query').value.trim() || undefined,
+                calculator_expression: document.getElementById('agent-calc').value.trim() || undefined,
+                db_keyword: document.getElementById('agent-db-keyword').value.trim() || undefined,
+                prompt: document.getElementById('agent-prompt').value.trim() || undefined,
+                python_code: document.getElementById('agent-python').value.trim() || undefined,
+                confirm_consequential: document.getElementById('agent-confirm').checked
+            };
+
+            try {
+                const res = await fetch('/api/agent/execute', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Agent execution failed');
+                logAPI(data);
+            } catch (err) { logAPI(`Agent Error: ${err.message}`); }
+        }
+
+        async function listAgentActions() {
+            const token = localStorage.getItem('access_token');
+            if (!token) return logAPI('Error: No access token. Please login first.');
+            try {
+                const res = await fetch('/api/agent/actions', {
+                    method: 'GET',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Unable to list actions');
+                logAPI(data);
+            } catch (err) { logAPI(`Agent Error: ${err.message}`); }
+        }
+    </script>
+</body>
+</html>

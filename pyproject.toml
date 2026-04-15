@@ -1,0 +1,25 @@
+[project]
+name = "secassuredauth"
+version = "0.1.0"
+description = "Context-based authentication demo with FastAPI and OAuth 2.1 patterns"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "fastapi==0.104.1",
+    "uvicorn==0.24.0",
+    "sqlalchemy==2.0.23",
+    "psycopg2-binary==2.9.9",
+    "python-multipart==0.0.6",
+    "python-jose[cryptography]==3.3.0",
+    "passlib[bcrypt]==1.7.4",
+    "bcrypt==3.2.2",
+    "duckduckgo-search==8.1.1",
+    "httpx==0.25.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==7.4.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["test_main.py", "tests"]
