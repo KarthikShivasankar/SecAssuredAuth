@@ -4,7 +4,11 @@ import os
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
-MCP_SHARED_TOKEN = os.getenv("MCP_SHARED_TOKEN", "local-mcp-token")
+APP_ENV = os.getenv("APP_ENV", "development").lower()
+DEFAULT_MCP_SHARED_TOKEN = "local-mcp-token"
+MCP_SHARED_TOKEN = os.getenv("MCP_SHARED_TOKEN", DEFAULT_MCP_SHARED_TOKEN)
+if APP_ENV == "production" and MCP_SHARED_TOKEN == DEFAULT_MCP_SHARED_TOKEN:
+    raise RuntimeError("Insecure MCP_SHARED_TOKEN for production")
 
 app = FastAPI(title="Sample MCP Calculator Server")
 

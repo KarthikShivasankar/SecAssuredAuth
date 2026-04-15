@@ -55,15 +55,25 @@ A full-stack authentication demo built with **FastAPI**, **SQLAlchemy**, **Docke
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/register/user` | Register a human user |
-| `POST` | `/api/register/machine` | Register a machine client |
+| `POST` | `/api/register/user` | Register a human user (returns one-time MFA setup secret) |
+| `POST` | `/api/register/machine` | Register a machine client (bootstrap token required) |
 | `POST` | `/api/authorize` | Contextual login → auth code or MFA challenge |
 | `POST` | `/api/mfa` | Complete MFA step-up |
 | `POST` | `/api/token` | Exchange auth code or client credentials for JWT |
 
 #### POST /api/register/user
 ```json
-{ "username": "alice", "password": "secret", "role": "user" }
+{ "username": "alice", "password": "StrongPassword123!", "role": "user" }
+```
+Returns:
+```json
+{
+  "message": "User 'alice' registered as 'user'",
+  "mfa_setup": {
+    "secret": "BASE32SECRET...",
+    "provisioning_uri": "otpauth://totp/..."
+  }
+}
 ```
 
 #### POST /api/authorize
@@ -197,9 +207,15 @@ ollama pull llama3.1:8b
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SECRET_KEY` | `fallback-secret-key-for-local-dev-1234` | JWT signing key — **change in production** |
+| `APP_ENV` | `development` | Runtime mode (`production` enforces strict secret checks) |
+| `SECRET_KEY` | `fallback-secret-key-for-local-dev-1234` | JWT signing key (must be strong in production) |
 | `DATABASE_URL` | `sqlite:///./local_dev.db` | Database connection string |
-| `MCP_SHARED_TOKEN` | `local-mcp-token` | Shared bearer token for MCP services |
+| `MCP_SHARED_TOKEN` | `local-mcp-token` | Shared bearer token for MCP services (must be strong in production) |
+| `ADMIN_BOOTSTRAP_TOKEN` | unset | Required for machine registration and elevated role provisioning |
+| `ALLOWED_ORIGINS` | `http://localhost:8000,http://127.0.0.1:8000` | Comma-separated CORS allow-list for production |
+| `TRUST_PROXY_HEADERS` | `false` | Trust `X-Forwarded-For` only when running behind trusted proxy |
+| `JWT_ISSUER` | `secassured-auth` | JWT issuer claim |
+| `JWT_AUDIENCE` | `secassured-api` | JWT audience claim |
 | `MCP_CALCULATOR_URL` | `http://localhost:8101` | Calculator MCP service URL |
 | `MCP_EXTERNAL_DB_URL` | `http://localhost:8102` | External DB MCP service URL |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API URL |
@@ -259,14 +275,13 @@ See [USAGE.md](USAGE.md) for the complete extension workflow.
 
 ### Production Hardening Checklist
 
-- [ ] Rotate `SECRET_KEY` and `MCP_SHARED_TOKEN` via secrets manager
-- [ ] Replace hardcoded OTP (`123456`) with TOTP (e.g. `pyotp`)
-- [ ] Add `iss`/`aud` claims and strict audience validation to JWTs
-- [ ] Add `state` parameter and strict redirect URI validation to OAuth flows
-- [ ] Add SSRF protections to `agent_runtime.py` URL fetches
-- [ ] Enforce HTTPS-only transport (except localhost)
-- [ ] Add rate limiting to `/api/authorize` and `/api/token`
-- [ ] Publish OAuth 2.1 authorization server metadata endpoint
+Use [PROD_SECURITY_CHECKLIST.md](PROD_SECURITY_CHECKLIST.md) as the release gate source of truth.
+
+### Frontend Notes
+
+- Human registration now returns one-time MFA setup details; save the secret in an authenticator app before first login.
+- Browser token storage uses in-memory state only (no `localStorage` persistence).
+- Registration/login forms include client-side validation aligned to backend constraints (minimum secret/password length and structured API validation errors).
 
 ## References
 

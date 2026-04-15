@@ -47,15 +47,30 @@ def execute_agent(
                 raise HTTPException(status_code=400, detail=f"{action_name} requires confirm_consequential=true")
             results["actions"][action_name] = spec.handler(value)
 
-        db.add(AgentAudit(actor=actor, action="agent_execute", status="SUCCESS", details=str(list(results["actions"].keys()))))
+        db.add(
+            AgentAudit(
+                actor=actor,
+                action="agent_execute",
+                status="SUCCESS",
+                details=f"executed_actions={','.join(results['actions'].keys())}",
+            )
+        )
         db.commit()
         return results
     except Exception as exc:
-        db.add(AgentAudit(actor=actor, action="agent_execute", status="FAILED", details=str(exc)))
+        error_code = "http_error" if isinstance(exc, HTTPException) else "internal_error"
+        db.add(
+            AgentAudit(
+                actor=actor,
+                action="agent_execute",
+                status="FAILED",
+                details=f"error_code={error_code}",
+            )
+        )
         db.commit()
         if isinstance(exc, HTTPException):
             raise
-        raise HTTPException(status_code=502, detail=f"Agent execution failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail="Agent execution failed due to internal service error") from exc
 
 
 @router.get("/actions")

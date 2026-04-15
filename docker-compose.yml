@@ -4,11 +4,11 @@ services:
   db:
     image: postgres:15-alpine
     environment:
-      POSTGRES_USER: auth_user
-      POSTGRES_PASSWORD: auth_password
-      POSTGRES_DB: auth_db
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER:-auth_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-auth_db}
+    expose:
+      - "5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U auth_user -d auth_db"]
       interval: 5s
@@ -20,9 +20,15 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://auth_user:auth_password@db:5432/auth_db
-      - SECRET_KEY=your-super-secret-key-change-in-production-1234567890
-      - MCP_SHARED_TOKEN=local-mcp-token
+      - APP_ENV=${APP_ENV:-production}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-auth_user}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-auth_db}
+      - SECRET_KEY=${SECRET_KEY:?set SECRET_KEY}
+      - MCP_SHARED_TOKEN=${MCP_SHARED_TOKEN:?set MCP_SHARED_TOKEN}
+      - ADMIN_BOOTSTRAP_TOKEN=${ADMIN_BOOTSTRAP_TOKEN:?set ADMIN_BOOTSTRAP_TOKEN}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:8000}
+      - TRUST_PROXY_HEADERS=${TRUST_PROXY_HEADERS:-true}
+      - JWT_ISSUER=${JWT_ISSUER:-secassured-auth}
+      - JWT_AUDIENCE=${JWT_AUDIENCE:-secassured-api}
       - MCP_CALCULATOR_URL=http://mcp_calculator:8101
       - MCP_EXTERNAL_DB_URL=http://mcp_external_db:8102
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
@@ -39,15 +45,17 @@ services:
     build: .
     command: ["uv", "run", "uvicorn", "mcp_calculator_server:app", "--host", "0.0.0.0", "--port", "8101"]
     environment:
-      - MCP_SHARED_TOKEN=local-mcp-token
-    ports:
-      - "8101:8101"
+      - APP_ENV=${APP_ENV:-production}
+      - MCP_SHARED_TOKEN=${MCP_SHARED_TOKEN:?set MCP_SHARED_TOKEN}
+    expose:
+      - "8101"
 
   mcp_external_db:
     build: .
     command: ["uv", "run", "uvicorn", "mcp_external_db_server:app", "--host", "0.0.0.0", "--port", "8102"]
     environment:
-      - MCP_SHARED_TOKEN=local-mcp-token
+      - APP_ENV=${APP_ENV:-production}
+      - MCP_SHARED_TOKEN=${MCP_SHARED_TOKEN:?set MCP_SHARED_TOKEN}
       - EXTERNAL_DB_PATH=/app/external_data.db
-    ports:
-      - "8102:8102"
+    expose:
+      - "8102"

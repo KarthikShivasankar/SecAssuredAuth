@@ -4,7 +4,11 @@ from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Query
 
-MCP_SHARED_TOKEN = os.getenv("MCP_SHARED_TOKEN", "local-mcp-token")
+APP_ENV = os.getenv("APP_ENV", "development").lower()
+DEFAULT_MCP_SHARED_TOKEN = "local-mcp-token"
+MCP_SHARED_TOKEN = os.getenv("MCP_SHARED_TOKEN", DEFAULT_MCP_SHARED_TOKEN)
+if APP_ENV == "production" and MCP_SHARED_TOKEN == DEFAULT_MCP_SHARED_TOKEN:
+    raise RuntimeError("Insecure MCP_SHARED_TOKEN for production")
 DATA_PATH = Path(os.getenv("EXTERNAL_DB_PATH", "external_data.db"))
 
 app = FastAPI(title="Sample MCP External DB Server")
